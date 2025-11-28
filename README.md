@@ -133,32 +133,32 @@ python evaluation/closed_loop_sim.py --checkpoint path/to/checkpoint.ckpt
 ## 路线图
 
 ### 已完成 ✅
-- [x] 实现 VLA Driving Policy 模型架构
-  - [x] 集成预训练 VLM backbone（LLaVA/Phi-3-Vision）
-  - [x] CLIP 视觉编码器
-  - [x] LoRA 适配器配置
-  - [x] MLP 动作头（轨迹预测）
-- [x] CARLA VLA 数据集加载器
-  - [x] 图像预处理（CLIP 归一化）
-  - [x] 文本 tokenization
-  - [x] 轨迹归一化和重采样
-  - [x] Custom collate function
-- [x] PyTorch Lightning 训练模块
-- [x] 评估指标和闭环仿真框架
-- [x] 配置文件系统
-- [x] 示例和测试脚本
+- ✅ 实现 VLA Driving Policy 模型架构
+  - ✅ 集成预训练 VLM backbone（LLaVA/Phi-3-Vision）
+  - ✅ CLIP 视觉编码器
+  - ✅ LoRA 适配器配置
+  - ✅ MLP 动作头（轨迹预测）
+- ✅ CARLA VLA 数据集加载器
+  - ✅ 图像预处理（CLIP 归一化）
+  - ✅ 文本 tokenization
+  - ✅ 轨迹归一化和重采样
+  - ✅ Custom collate function
+- ✅ PyTorch Lightning 训练模块
+- ✅ 评估指标和闭环仿真框架
+- ✅ 配置文件系统
+- ✅ 示例和测试脚本
 
 ### 进行中 🚧
-- [ ] CARLA 数据收集脚本实现
-- [ ] 在 CARLA 上收集驾驶数据
-- [ ] 模仿学习训练
-- [ ] 完整的闭环评估
+- ⏳ CARLA 数据收集脚本实现
+- ⏳ 在 CARLA 上收集驾驶数据
+- ⏳ 模仿学习训练
+- ⏳ 完整的闭环评估
 
 ### 计划中 📋
-- [ ] 多任务学习（导航、避障、车道保持）
-- [ ] 强化学习微调
-- [ ] 预训练模型发布
-- [ ] 性能优化和加速
+- 📌 多任务学习（导航、避障、车道保持）
+- 📌 强化学习微调
+- 📌 预训练模型发布
+- 📌 性能优化和加速
 
 ## 引用
 
