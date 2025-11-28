@@ -1,0 +1,66 @@
+# Data Configuration
+dataset:
+  name: "carla_driving"
+  data_root: "./datasets/carla"
+  image_size: [224, 224]
+  sequence_length: 1  # Number of frames for temporal modeling
+  
+train:
+  batch_size: 32
+  num_workers: 4
+  shuffle: true
+  pin_memory: true
+  
+val:
+  batch_size: 64
+  num_workers: 4
+  shuffle: false
+  pin_memory: true
+
+# CARLA-specific settings
+carla:
+  host: "localhost"
+  port: 2000
+  timeout: 10.0
+  sensors:
+    - type: "rgb_camera"
+      width: 800
+      height: 600
+      fov: 90
+      position: [2.0, 0.0, 1.5]  # [x, y, z] relative to vehicle
+      rotation: [0.0, 0.0, 0.0]  # [pitch, yaw, roll]
+    - type: "semantic_segmentation"
+      enabled: false
+  
+  towns:
+    - "Town01"
+    - "Town02"
+    - "Town03"
+    - "Town04"
+    - "Town05"
+  
+  weather_presets:
+    - "ClearNoon"
+    - "CloudyNoon"
+    - "WetNoon"
+    - "ClearSunset"
+
+# Data augmentation
+augmentation:
+  random_brightness: 0.2
+  random_contrast: 0.2
+  random_saturation: 0.2
+  random_hue: 0.1
+  horizontal_flip: 0.0  # Disable for driving
+  gaussian_blur: 0.1
+  
+# Language instructions
+language:
+  instruction_types:
+    - "navigate_to_destination"
+    - "follow_lane"
+    - "turn_left"
+    - "turn_right"
+    - "stop_at_traffic_light"
+    - "overtake_vehicle"
+  use_synthetic_instructions: true

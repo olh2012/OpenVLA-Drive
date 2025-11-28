@@ -1,0 +1,62 @@
+# VLA Driving Policy Configuration
+
+model:
+  name: "VLADrivingPolicy"
+  
+  # Pre-trained VLM backbone
+  backbone:
+    model_name: "llava-hf/llava-1.5-7b-hf"  # or "microsoft/phi-3-vision-128k-instruct"
+    vision_model_name: "openai/clip-vit-large-patch14"
+    freeze_vision_tower: true
+    freeze_llm: true  # Only train LoRA adapters and action head
+  
+  # LoRA configuration
+  lora:
+    use_lora: true
+    r: 16  # LoRA rank
+    lora_alpha: 32
+    lora_dropout: 0.05
+    target_modules:
+      - "q_proj"
+      - "v_proj"
+      - "k_proj"
+      - "o_proj"
+    bias: "none"
+  
+  # Action head configuration
+  action_head:
+    num_timesteps: 10  # Predict T future waypoints
+    hidden_dim: 512
+    num_layers: 3
+    dropout: 0.1
+
+# Training configuration
+training:
+  batch_size: 8
+  learning_rate: 2.0e-4
+  weight_decay: 0.01
+  max_epochs: 50
+  warmup_epochs: 3
+  
+  # Optimizer
+  optimizer:
+    name: "adamw"
+    betas: [0.9, 0.999]
+    eps: 1.0e-8
+  
+  # Loss weights
+  loss:
+    trajectory_weight: 1.0
+    loss_type: "smooth_l1"  # or "mse", "l1"
+  
+  # Gradient settings
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 4
+
+# Data configuration
+data:
+  image_size: [224, 224]
+  max_text_length: 128
+  normalize:
+    mean: [0.48145466, 0.4578275, 0.40821073]  # CLIP normalization
+    std: [0.26862954, 0.26130258, 0.27577711]

@@ -1,0 +1,58 @@
+# Training Configuration
+trainer:
+  max_epochs: 100
+  accelerator: "gpu"
+  devices: 1
+  precision: "16-mixed"  # Mixed precision training
+  gradient_clip_val: 1.0
+  accumulate_grad_batches: 1
+  log_every_n_steps: 50
+  val_check_interval: 1.0
+  enable_checkpointing: true
+  enable_progress_bar: true
+  
+optimizer:
+  name: "adamw"
+  lr: 3.0e-4
+  weight_decay: 0.01
+  betas: [0.9, 0.999]
+  eps: 1.0e-8
+
+scheduler:
+  name: "cosine"
+  warmup_epochs: 5
+  min_lr: 1.0e-6
+  
+loss:
+  steering_weight: 1.0
+  throttle_weight: 0.5
+  brake_weight: 0.5
+  loss_type: "mse"  # or "l1", "smooth_l1"
+
+# Callbacks
+checkpoint:
+  monitor: "val_loss"
+  mode: "min"
+  save_top_k: 3
+  save_last: true
+  dirpath: "./checkpoints"
+  filename: "vla-{epoch:02d}-{val_loss:.4f}"
+
+early_stopping:
+  monitor: "val_loss"
+  patience: 10
+  mode: "min"
+  min_delta: 0.001
+
+# Logging
+logging:
+  use_wandb: false
+  use_tensorboard: true
+  project_name: "openvla-drive"
+  run_name: null  # Auto-generated if null
+  log_dir: "./logs"
+  save_dir: "./outputs"
+
+# Reproducibility
+seed: 42
+deterministic: false  # Set to true for full reproducibility (slower)

@@ -1,0 +1,149 @@
+CARLA VLA Dataset Format Specification
+======================================
+
+This document describes the expected data format for the CARLA VLA dataset.
+
+Directory Structure
+------------------
+
+data_root/
+├── train/
+│   ├── images/
+│   │   ├── 000000.png
+│   │   ├── 000001.png
+│   │   └── ...
+│   └── annotations.json
+├── val/
+│   ├── images/
+│   │   └── ...
+│   └── annotations.json
+└── test/
+    ├── images/
+    │   └── ...
+    └── annotations.json
+
+
+Annotation Format (annotations.json)
+-----------------------------------
+
+{
+  "000000": {
+    "image": "images/000000.png",
+    "command": "Follow the lane and maintain safe distance",
+    "trajectory": [
+      [0.0, 0.0],
+      [2.0, 0.1],
+      [4.0, 0.3],
+      ...
+    ],
+    "ego_position": [x, y, theta]  // Optional: for trajectory normalization
+  },
+  "000001": {
+    ...
+  }
+}
+
+Fields:
+- image: Relative path to the image file
+- command: Navigation instruction text
+- trajectory: List of [x, y] waypoint coordinates
+- ego_position: [x, y, theta] ego vehicle pose (optional)
+  - x, y: Position in world coordinates
+  - theta: Heading angle in radians
+
+
+Image Format
+-----------
+- Format: PNG or JPG
+- Recommended size: 800x600 (will be resized to 224x224 for CLIP)
+- Color space: RGB
+- Source: Front-view camera from CARLA
+
+
+Trajectory Format
+----------------
+- Number of waypoints: Variable (will be resampled to T=10)
+- Coordinates: [x, y] in meters
+- Coordinate system:
+  - If ego_position is provided: absolute world coordinates
+  - If ego_position is NOT provided: relative to first waypoint
+- Time horizon: Typically 2-5 seconds into the future
+- Sampling rate: 0.1-0.5 seconds per waypoint
+
+
+Navigation Commands
+------------------
+Example commands:
+- "Follow the lane"
+- "Turn left at the next intersection"
+- "Turn right"
+- "Stop at the traffic light"
+- "Change lane to the left"
+- "Overtake the vehicle ahead"
+- "Navigate to the destination"
+
+
+Data Collection from CARLA
+--------------------------
+
+1. Start CARLA server:
+   cd $CARLA_ROOT
+   ./CarlaUE4.sh
+
+2. Run data collection script (to be implemented):
+   python scripts/collect_data.py --output ./datasets/carla --num-episodes 100
+
+3. The script should record:
+   - RGB camera images (front view)
+   - Vehicle position and orientation
+   - Future trajectory (ground truth from expert driver)
+   - High-level navigation command
+
+
+Normalization Details
+--------------------
+
+Images:
+- Resized to 224x224 (CLIP input size)
+- Normalized with CLIP mean/std:
+  mean = [0.48145466, 0.4578275, 0.40821073]
+  std = [0.26862954, 0.26130258, 0.27577711]
+
+Trajectory:
+- Translated to ego vehicle position
+- Rotated to ego vehicle heading
+- Result: waypoints in vehicle-centric coordinate system
+  - x-axis: forward (longitudinal)
+  - y-axis: left (lateral)
+
+Text:
+- Tokenized using LLM tokenizer (e.g., Phi-2, LLaVA)
+- Max length: 128 tokens
+- Padding: right-padded with pad_token_id
+
+
+Usage Example
+------------
+
+from data.carla_dataset import get_carla_vla_dataloader
+
+dataloader = get_carla_vla_dataloader(
+    data_root='./datasets/carla',
+    split='train',
+    batch_size=8,
+    tokenizer_name='microsoft/phi-2',
+    num_trajectory_points=10,
+    image_size=(224, 224),
+    num_workers=4,
+)
+
+for batch in dataloader:
+    images = batch['image']           # [B, 3, 224, 224]
+    trajectories = batch['trajectory'] # [B, 10, 2]
+    input_ids = batch['input_ids']    # [B, max_len]
+    attention_mask = batch['attention_mask']  # [B, max_len]
+    commands = batch['command']       # List[str]
+    
+    # Train model
+    outputs = model(images, input_ids, attention_mask)
+    loss = criterion(outputs['trajectory'], trajectories)

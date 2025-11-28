@@ -1,0 +1,30 @@
+# Model Configuration
+vision_encoder:
+  type: "resnet50"  # or "vit_base", "efficientnet_b4"
+  pretrained: true
+  freeze_backbone: false
+  output_dim: 2048
+
+language_encoder:
+  type: "bert"  # or "clip_text", "t5"
+  model_name: "bert-base-uncased"
+  pretrained: true
+  freeze_encoder: false
+  output_dim: 768
+  max_length: 128
+
+action_decoder:
+  hidden_dim: 512
+  num_layers: 3
+  dropout: 0.1
+  action_dim: 3  # [steering, throttle, brake]
+
+fusion:
+  type: "cross_attention"  # or "concat", "film"
+  num_heads: 8
+  num_layers: 4
+
+output:
+  steering_range: [-1.0, 1.0]
+  throttle_range: [0.0, 1.0]
+  brake_range: [0.0, 1.0]
