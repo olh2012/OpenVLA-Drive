@@ -1,10 +1,12 @@
 # OpenVLA-Drive 🚗🤖
 
-**基于视觉-语言-动作（VLA）模型的开源自动驾驶项目**
+**基于视觉-语言-动作（VLA）模型的自动驾驶研究项目**
+
+> **说明**: 本项目为个人研究项目，代码仅供学习参考。
 
 ## 项目简介
 
-OpenVLA-Drive 是一个创新的自动驾驶研究项目，利用 Vision-Language-Action (VLA) 模型在 CARLA 仿真器中实现端到端的自动驾驶控制。该项目旨在探索多模态基础模型在自动驾驶领域的应用潜力。
+OpenVLA-Drive 探索 Vision-Language-Action (VLA) 模型在 CARLA 仿真器中的端到端驾驶应用。
 
 ## VLA 模型在自动驾驶中的概念
 
@@ -328,35 +330,11 @@ training:
   max_epochs: 50
 ```
 
-## 常见问题
+## 配置参数
 
-### Q1: 如何选择 VLM backbone？
+支持的预训练模型：Phi-2、LLaVA-1.5-7B、Phi-3-Vision
 
-项目支持多种预训练 VLM：
-- **Phi-2** (`microsoft/phi-2`): 轻量级，适合快速实验
-- **LLaVA-1.5-7B** (`llava-hf/llava-1.5-7b-hf`): 更强的视觉-语言理解能力
-- **Phi-3-Vision** (`microsoft/phi-3-vision-128k-instruct`): 最新模型，支持长上下文
-
-### Q2: 训练需要多少 GPU 内存？
-
-使用 LoRA 微调时：
-- Phi-2: ~8GB
-- LLaVA-1.5-7B: ~16GB
-- 使用混合精度训练可进一步减少内存占用
-
-### Q3: 如何准备自己的数据？
-
-1. 按照 `data/DATA_FORMAT.txt` 的格式组织数据
-2. 运行 `examples/test_dataset.py` 查看数据加载示例
-3. 确保数据包含：前视图图像、导航指令、轨迹标注
-
-### Q4: 如何调整预测的轨迹点数量？
-
-修改配置文件中的 `num_timesteps` 参数：
-```yaml
-action_head:
-  num_timesteps: 20  # 从 10 改为 20
-```
+详细配置见 `configs/policy_config.yaml`
 
 ## 示例和教程
 
@@ -427,16 +405,15 @@ python check_setup.py
 
 ## 贡献
 
-欢迎提交 Issue 和 Pull Request！
+本项目为个人研究项目，暂不接受外部贡献。
 
 ## 许可证
 
 MIT License
 
-## 联系方式
+## 作者
 
-- **作者**: 欧林海
-- **邮箱**: franka907@126.com
+欧林海
 
 ---
 
