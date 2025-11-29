@@ -81,43 +81,294 @@ OpenVLA-Drive/
 conda create -n openvla-drive python=3.10
 conda activate openvla-drive
 
+# 克隆项目
+git clone https://github.com/olh2012/OpenVLA-Drive.git
+cd OpenVLA-Drive
+
 # 安装依赖
 pip install -r requirements.txt
+
+# 验证安装
+python check_setup.py
 ```
 
-### 2. 安装 CARLA
+### 2. 安装 CARLA（可选）
 
-下载并安装 CARLA 0.9.15:
+如需收集数据或进行仿真评估，需要安装 CARLA：
+
 ```bash
-# 下载地址: https://github.com/carla-simulator/carla/releases/tag/0.9.15
+# 下载 CARLA 0.9.15
+# 地址: https://github.com/carla-simulator/carla/releases/tag/0.9.15
+
 # 解压后设置环境变量
 export CARLA_ROOT=/path/to/CARLA_0.9.15
+export PYTHONPATH=$PYTHONPATH:$CARLA_ROOT/PythonAPI/carla/dist/carla-0.9.15-py3.10-linux-x86_64.egg
 ```
 
-### 3. 数据收集
+### 3. 快速测试
+
+**测试 VLA 驾驶策略模型**:
 
 ```bash
-# 启动 CARLA 服务器
-cd $CARLA_ROOT
-./CarlaUE4.sh
+# 运行策略模型测试示例
+python examples/test_policy.py
 
-# 在另一个终端收集数据
-python scripts/collect_data.py
+# 预期输出：
+# - 模型架构总结
+# - 可训练参数统计（仅 LoRA + Action Head）
+# - 推理示例
+# - 训练示例
 ```
 
-### 4. 模型训练
+**测试数据集加载器**:
 
 ```bash
-python scripts/train.py --config configs/training/default.yaml
+# 运行数据集测试示例（会自动创建 dummy 数据）
+python examples/test_dataset.py
+
+# 预期输出：
+# - 创建测试数据集
+# - 加载和预处理示例
+# - DataLoader 批处理示例
+# - 数据格式验证
 ```
 
-### 5. 闭环评估
+## 详细使用说明
+
+### 模型使用
+
+#### VLA Driving Policy 基本用法
+
+```python
+from models.policy import VLADrivingPolicy
+import torch
+
+# 1. 初始化模型
+model = VLADrivingPolicy(
+    model_name="microsoft/phi-2",  # 或 "llava-hf/llava-1.5-7b-hf"
+    vision_model_name="openai/clip-vit-base-patch32",
+    num_timesteps=10,  # 预测 10 个未来路径点
+    use_lora=True,     # 使用 LoRA 高效微调
+    lora_config={
+        'r': 16,
+        'lora_alpha': 32,
+        'lora_dropout': 0.05,
+    },
+)
+
+# 2. 准备输入
+images = torch.randn(2, 3, 224, 224)  # [batch_size, C, H, W]
+instructions = [
+    "Follow the lane and maintain safe distance",
+    "Turn left at the next intersection"
+]
+
+# 3. 推理
+trajectory = model.predict_trajectory(
+    image_tensors=images,
+    text_instructions=instructions
+)
+print(f"Predicted trajectory: {trajectory.shape}")  # [2, 10, 2]
+
+# 4. 查看可训练参数
+model.print_trainable_parameters()
+# 输出示例: Trainable: 2.5M / All: 2.7B (0.09%)
+```
+
+### 数据准备
+
+#### CARLA 数据格式
+
+请参考 `data/DATA_FORMAT.txt` 了解详细的数据格式规范。
+
+**目录结构**:
+```
+datasets/carla/
+├── train/
+│   ├── images/
+│   │   ├── 000000.png
+│   │   └── ...
+│   └── annotations.json
+├── val/
+│   └── ...
+└── test/
+    └── ...
+```
+
+**annotations.json 格式**:
+```json
+{
+  "000000": {
+    "image": "images/000000.png",
+    "command": "Follow the lane",
+    "trajectory": [[0.0, 0.0], [2.0, 0.1], [4.0, 0.3], ...],
+    "ego_position": [x, y, theta]
+  }
+}
+```
+
+#### 使用数据加载器
+
+```python
+from data.carla_dataset import get_carla_vla_dataloader
+
+# 创建 DataLoader
+dataloader = get_carla_vla_dataloader(
+    data_root='./datasets/carla',
+    split='train',
+    batch_size=8,
+    tokenizer_name='microsoft/phi-2',
+    num_trajectory_points=10,
+    num_workers=4,
+)
+
+# 迭代数据
+for batch in dataloader:
+    images = batch['image']           # [8, 3, 224, 224]
+    trajectories = batch['trajectory'] # [8, 10, 2]
+    input_ids = batch['input_ids']    # [8, 128]
+    attention_mask = batch['attention_mask']
+    
+    # 训练循环
+    # ...
+```
+
+### 模型训练
+
+#### 使用 PyTorch Lightning 训练
+
+```python
+import pytorch_lightning as pl
+from training.policy_lightning_module import VLAPolicyLightningModule
+from data.carla_dataset import get_carla_vla_dataloader
+import yaml
+
+# 1. 加载配置
+with open('configs/policy_config.yaml', 'r') as f:
+    config = yaml.safe_load(f)
+
+# 2. 准备数据
+train_loader = get_carla_vla_dataloader(
+    data_root='./datasets/carla',
+    split='train',
+    batch_size=config['training']['batch_size'],
+    num_workers=4,
+)
+
+val_loader = get_carla_vla_dataloader(
+    data_root='./datasets/carla',
+    split='val',
+    batch_size=config['training']['batch_size'],
+    num_workers=4,
+)
+
+# 3. 创建模型
+model = VLAPolicyLightningModule(
+    model_config=config['model'],
+    optimizer_config=config['training']['optimizer'],
+    scheduler_config=config['training'].get('scheduler', {}),
+    loss_config=config['training']['loss'],
+)
+
+# 4. 配置训练器
+trainer = pl.Trainer(
+    max_epochs=50,
+    accelerator='gpu',
+    devices=1,
+    precision='16-mixed',
+    gradient_clip_val=1.0,
+)
+
+# 5. 开始训练
+trainer.fit(model, train_loader, val_loader)
+```
+
+**或使用命令行**:
+```bash
+python scripts/train.py --config configs/policy_config.yaml
+```
+
+### 评估和推理
 
 ```bash
-python evaluation/closed_loop_sim.py --checkpoint path/to/checkpoint.ckpt
+# 在 CARLA 中进行闭环评估
+python evaluation/closed_loop_sim.py \
+    --checkpoint checkpoints/best_model.ckpt \
+    --host localhost \
+    --port 2000 \
+    --num_episodes 10
 ```
 
-## 核心特性
+## 配置说明
+
+### 模型配置 (configs/policy_config.yaml)
+
+```yaml
+model:
+  backbone:
+    model_name: "microsoft/phi-2"  # VLM backbone
+    vision_model_name: "openai/clip-vit-base-patch32"
+    freeze_vision_tower: true
+    freeze_llm: true
+  
+  lora:
+    use_lora: true
+    r: 16              # LoRA rank
+    lora_alpha: 32
+    lora_dropout: 0.05
+  
+  action_head:
+    num_timesteps: 10  # 预测的路径点数量
+    hidden_dim: 512
+    num_layers: 3
+
+training:
+  batch_size: 8
+  learning_rate: 2.0e-4
+  max_epochs: 50
+```
+
+## 常见问题
+
+### Q1: 如何选择 VLM backbone？
+
+项目支持多种预训练 VLM：
+- **Phi-2** (`microsoft/phi-2`): 轻量级，适合快速实验
+- **LLaVA-1.5-7B** (`llava-hf/llava-1.5-7b-hf`): 更强的视觉-语言理解能力
+- **Phi-3-Vision** (`microsoft/phi-3-vision-128k-instruct`): 最新模型，支持长上下文
+
+### Q2: 训练需要多少 GPU 内存？
+
+使用 LoRA 微调时：
+- Phi-2: ~8GB
+- LLaVA-1.5-7B: ~16GB
+- 使用混合精度训练可进一步减少内存占用
+
+### Q3: 如何准备自己的数据？
+
+1. 按照 `data/DATA_FORMAT.txt` 的格式组织数据
+2. 运行 `examples/test_dataset.py` 查看数据加载示例
+3. 确保数据包含：前视图图像、导航指令、轨迹标注
+
+### Q4: 如何调整预测的轨迹点数量？
+
+修改配置文件中的 `num_timesteps` 参数：
+```yaml
+action_head:
+  num_timesteps: 20  # 从 10 改为 20
+```
+
+## 示例和教程
+
+所有示例代码位于 `examples/` 目录：
+
+- `test_policy.py`: VLA 驾驶策略模型完整测试
+- `test_dataset.py`: 数据集加载和预处理示例
+
+运行示例前请确保已安装所有依赖：
+```bash
+python check_setup.py
+```
 
 - ✅ 基于预训练 VLM 的 VLA 架构（支持 LLaVA、Phi-3-Vision）
 - ✅ LoRA 高效微调（仅训练 <1% 参数）
