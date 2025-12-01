@@ -1,4 +1,4 @@
-# OpenVLA-Drive 🚗🤖
+# OpenVLA-Drive
 
 **基于视觉-语言-动作（VLA）模型的自动驾驶研究项目**
 
