@@ -2,6 +2,7 @@
 Training Script for OpenVLA-Drive.
 
 目前默认针对 VLADrivingPolicy（轨迹预测）进行训练。
+支持 policy 模式（VLADrivingPolicy）和 vla 模式（经典 VLA，预留扩展位）。
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ import argparse
 import os
 import sys
 from copy import deepcopy
+from pathlib import Path
 
 import yaml
 
@@ -91,16 +93,40 @@ def build_policy_dataloader(
     split: str,
     tokenizer_name: str,
     num_timesteps: int,
+    policy_config: dict = None,
 ):
-    """Create CARLA dataloader compatible with VLADrivingPolicy."""
+    """
+    Create CARLA dataloader compatible with VLADrivingPolicy.
+    
+    Args:
+        data_config: Data configuration dictionary
+        split: Dataset split ('train', 'val', 'test')
+        tokenizer_name: Tokenizer model name
+        num_timesteps: Number of trajectory timesteps
+        policy_config: Optional policy config for data-specific overrides
+    """
     dataset_cfg = data_config.get('dataset', {})
     split_cfg = data_config.get(split, {})
 
     if not dataset_cfg:
         raise ValueError("data_config.dataset 不可为空")
 
+    # 从 policy_config 获取数据相关配置（如果可用）
+    if policy_config:
+        policy_data_cfg = policy_config.get('data', {})
+        if policy_data_cfg:
+            # 合并配置，policy_config 优先级更高
+            dataset_cfg = {**dataset_cfg, **policy_data_cfg}
+
+    data_root = dataset_cfg.get('data_root', './datasets/carla')
+    # 检查数据路径是否存在
+    data_path = Path(data_root) / split
+    if not data_path.exists():
+        print(f"⚠️  警告: 数据路径不存在 {data_path}")
+        print(f"   请确保数据集已正确放置在 {data_root}/{split}/")
+
     return get_carla_vla_dataloader(
-        data_root=dataset_cfg.get('data_root', './datasets/carla'),
+        data_root=data_root,
         split=split,
         batch_size=split_cfg.get('batch_size', 8),
         num_workers=split_cfg.get('num_workers', 4),
@@ -109,6 +135,7 @@ def build_policy_dataloader(
         tokenizer_name=tokenizer_name,
         num_trajectory_points=num_timesteps,
         max_text_length=data_config.get('language', {}).get('max_length', 128),
+        use_clip_normalization=dataset_cfg.get('use_clip_normalization', True),
     )
 
 
@@ -215,44 +242,81 @@ def main():
 
     try:
         if args.module == "policy":
-            tokenizer_name = model_config.get('backbone', {}).get('model_name', 'microsoft/phi-2')
-            num_timesteps = model_config.get('action_head', {}).get('num_timesteps', 10)
+            # 从 policy 配置中获取模型参数
+            backbone_config = model_config.get('backbone', {})
+            action_config = model_config.get('action_head', {})
+            
+            tokenizer_name = backbone_config.get('model_name', 'microsoft/phi-2')
+            num_timesteps = action_config.get('num_timesteps', 10)
+
+            # 传递 policy_config 以便数据加载器可以获取数据相关配置
+            policy_cfg = load_config(args.policy_config) if args.module == "policy" else None
 
             train_loader = build_policy_dataloader(
                 data_config=deepcopy(data_config),
                 split='train',
                 tokenizer_name=tokenizer_name,
                 num_timesteps=num_timesteps,
+                policy_config=policy_cfg,
             )
             val_loader = build_policy_dataloader(
                 data_config=deepcopy(data_config),
                 split='val',
                 tokenizer_name=tokenizer_name,
                 num_timesteps=num_timesteps,
+                policy_config=policy_cfg,
             )
+
+            print(f"✓ Train samples: {len(train_loader.dataset)}")
+            print(f"✓ Val samples:   {len(val_loader.dataset)}")
         else:
+            # VLA 模式扩展位（预留）
+            print("⚠️  经典 VLA 模式目前未集成对应数据管线，如需使用请自行扩展。")
             raise NotImplementedError("当前脚本尚未实现传统 VLA 模式的数据管线。")
 
-        print(f"Train samples: {len(train_loader.dataset)}")
-        print(f"Val samples:   {len(val_loader.dataset)}")
+    except FileNotFoundError as exc:
+        print(f"✗ 数据加载失败: {exc}")
+        print("   请检查数据配置文件中的 data_root 路径是否正确。")
+        train_loader = val_loader = None
     except Exception as exc:
-        print(f"Warning: Could not load data - {exc}")
+        print(f"✗ 数据加载失败: {exc}")
+        import traceback
+        traceback.print_exc()
+        train_loader = val_loader = None
 
     print("\nInitializing model...")
     if args.module == "policy":
+        # 使用 policy 配置中的 loss 配置（如果存在），否则使用 training_config
+        policy_cfg = load_config(args.policy_config) if args.module == "policy" else None
+        policy_training_cfg = policy_cfg.get('training', {}) if policy_cfg else {}
+        
+        # 合并 loss 配置：policy_config 优先级更高
+        loss_config = training_config.get('loss', {}).copy()
+        if policy_training_cfg.get('loss'):
+            loss_config.update(policy_training_cfg['loss'])
+        
+        # 确保 loss_config 包含 trajectory_weight 和 loss_type（policy 模式必需）
+        if 'trajectory_weight' not in loss_config:
+            loss_config['trajectory_weight'] = 1.0
+        if 'loss_type' not in loss_config:
+            loss_config['loss_type'] = 'smooth_l1'
+        
         model = VLAPolicyLightningModule(
+            model_config=model_config,
+            optimizer_config=training_config.get('optimizer', {}),
+            scheduler_config=training_config.get('scheduler', {}),
+            loss_config=loss_config,
+        )
+        print("✓ VLADrivingPolicy 模型初始化完成")
+    else:
+        # VLA 模式扩展位（预留）
+        model = VLALightningModule(
             model_config=model_config,
             optimizer_config=training_config.get('optimizer', {}),
             scheduler_config=training_config.get('scheduler', {}),
             loss_config=training_config.get('loss', {}),
         )
-    else:
-        model = VLALightningModule(
-            model_config=model_config,
-            optimizer_config=training_config['optimizer'],
-            scheduler_config=training_config['scheduler'],
-            loss_config=training_config['loss'],
-        )
+        print("✓ VLA 模型初始化完成（经典模式）")
 
     callbacks = setup_callbacks(training_config)
     logger = setup_logger(training_config)
@@ -280,7 +344,13 @@ def main():
     print("=" * 60 + "\n")
 
     if train_loader is None or val_loader is None:
-        print("✗ 数据加载失败，终止训练。请检查 datasets/carla 是否存在。")
+        print("\n" + "=" * 60)
+        print("✗ 数据加载失败，终止训练。")
+        print("=" * 60)
+        print("\n请检查：")
+        print("1. 数据配置文件中的 data_root 路径是否正确")
+        print("2. 数据集是否已正确放置在指定路径")
+        print("3. 数据集格式是否符合要求（参考 data/DATA_FORMAT.txt）")
         return
 
     trainer.fit(
@@ -293,7 +363,14 @@ def main():
     print("\n" + "=" * 60)
     print("Training completed!")
     print("=" * 60)
-    print(f"Best model checkpoint: {callbacks[0].best_model_path}")
+    if callbacks and len(callbacks) > 0:
+        checkpoint_callback = callbacks[0]
+        if hasattr(checkpoint_callback, 'best_model_path') and checkpoint_callback.best_model_path:
+            print(f"Best model checkpoint: {checkpoint_callback.best_model_path}")
+        else:
+            print("Checkpoint saved to: ./checkpoints/")
+    else:
+        print("Checkpoint saved to: ./checkpoints/")
 
 
 if __name__ == "__main__":
