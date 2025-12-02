@@ -1,17 +1,17 @@
 """
-Training Script for VLA Model
+Training Script for OpenVLA-Drive.
 
-This script handles the complete training pipeline using PyTorch Lightning.
+目前默认针对 VLADrivingPolicy（轨迹预测）进行训练。
 """
+
+from __future__ import annotations
 
 import argparse
 import os
 import sys
-from pathlib import Path
+from copy import deepcopy
 
-import torch
 import yaml
-from omegaconf import OmegaConf
 
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -26,22 +26,21 @@ except ImportError:
     print("Warning: PyTorch Lightning not available")
     LIGHTNING_AVAILABLE = False
 
-from data.carla_dataset import get_carla_dataloader
-from training.lightning_module import VLALightningModule
+from data.carla_dataset import get_carla_vla_dataloader
+from training.policy_lightning_module import VLAPolicyLightningModule
+from training.lightning_module import VLALightningModule  # 保留，方便后续扩展
 
 
 def load_config(config_path: str) -> dict:
     """Load YAML configuration file."""
     with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
-    return config
+        return yaml.safe_load(f)
 
 
 def setup_callbacks(config: dict):
     """Setup training callbacks."""
     callbacks = []
-    
-    # Checkpoint callback
+
     checkpoint_config = config.get('checkpoint', {})
     checkpoint_callback = ModelCheckpoint(
         monitor=checkpoint_config.get('monitor', 'val_loss'),
@@ -52,8 +51,7 @@ def setup_callbacks(config: dict):
         filename=checkpoint_config.get('filename', 'vla-{epoch:02d}-{val_loss:.4f}'),
     )
     callbacks.append(checkpoint_callback)
-    
-    # Early stopping callback
+
     early_stopping_config = config.get('early_stopping', {})
     if early_stopping_config:
         early_stopping = EarlyStopping(
@@ -63,14 +61,14 @@ def setup_callbacks(config: dict):
             min_delta=early_stopping_config.get('min_delta', 0.001),
         )
         callbacks.append(early_stopping)
-    
+
     return callbacks
 
 
 def setup_logger(config: dict):
     """Setup experiment logger."""
     logging_config = config.get('logging', {})
-    
+
     if logging_config.get('use_wandb', False):
         logger = WandbLogger(
             project=logging_config.get('project_name', 'openvla-drive'),
@@ -84,104 +82,183 @@ def setup_logger(config: dict):
         )
     else:
         logger = None
-    
+
     return logger
 
 
+def build_policy_dataloader(
+    data_config: dict,
+    split: str,
+    tokenizer_name: str,
+    num_timesteps: int,
+):
+    """Create CARLA dataloader compatible with VLADrivingPolicy."""
+    dataset_cfg = data_config.get('dataset', {})
+    split_cfg = data_config.get(split, {})
+
+    if not dataset_cfg:
+        raise ValueError("data_config.dataset 不可为空")
+
+    return get_carla_vla_dataloader(
+        data_root=dataset_cfg.get('data_root', './datasets/carla'),
+        split=split,
+        batch_size=split_cfg.get('batch_size', 8),
+        num_workers=split_cfg.get('num_workers', 4),
+        shuffle=split_cfg.get('shuffle', split == 'train'),
+        image_size=tuple(dataset_cfg.get('image_size', [224, 224])),
+        tokenizer_name=tokenizer_name,
+        num_trajectory_points=num_timesteps,
+        max_text_length=data_config.get('language', {}).get('max_length', 128),
+    )
+
+
+def apply_policy_training_overrides(
+    training_config: dict,
+    data_config: dict,
+    policy_training_cfg: dict,
+):
+    """Align batch size / LR / epochs with policy config when可用."""
+    if not policy_training_cfg:
+        return
+
+    batch_size = policy_training_cfg.get('batch_size')
+    if batch_size:
+        data_config.setdefault('train', {})['batch_size'] = batch_size
+        data_config.setdefault('val', {})['batch_size'] = batch_size
+
+    lr = policy_training_cfg.get('learning_rate')
+    if lr:
+        training_config.setdefault('optimizer', {})['lr'] = lr
+
+    max_epochs = policy_training_cfg.get('max_epochs')
+    if max_epochs:
+        training_config.setdefault('trainer', {})['max_epochs'] = max_epochs
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Train VLA Model")
+    parser = argparse.ArgumentParser(description="Train OpenVLA-Drive models")
     parser.add_argument(
         "--config",
         type=str,
         default="configs/training_config.yaml",
-        help="Path to training config file",
+        help="Training hyper-parameter config",
     )
     parser.add_argument(
         "--model_config",
         type=str,
         default="configs/model_config.yaml",
-        help="Path to model config file",
+        help="(VLA 模型) 配置文件；policy 模式会使用 --policy_config",
     )
     parser.add_argument(
         "--data_config",
         type=str,
         default="configs/data_config.yaml",
-        help="Path to data config file",
+        help="Data/DataLoader config",
+    )
+    parser.add_argument(
+        "--policy_config",
+        type=str,
+        default="configs/policy_config.yaml",
+        help="VLADrivingPolicy 配置文件",
+    )
+    parser.add_argument(
+        "--module",
+        choices=["policy", "vla"],
+        default="policy",
+        help="选择训练模块（默认：policy 轨迹预测）",
     )
     parser.add_argument(
         "--resume",
         type=str,
         default=None,
-        help="Path to checkpoint to resume training from",
+        help="Checkpoint path for resuming",
     )
-    
+
     args = parser.parse_args()
-    
+
+    if not LIGHTNING_AVAILABLE:
+        raise ImportError("未检测到 PyTorch Lightning，请先安装 pytorch-lightning>=2.1")
+
     print("=" * 60)
-    print("VLA Model Training")
+    print(f"OpenVLA-Drive Training ({args.module})")
     print("=" * 60)
-    
-    # Load configurations
-    print(f"Loading configs...")
+
+    print("Loading configs...")
     training_config = load_config(args.config)
-    model_config = load_config(args.model_config)
     data_config = load_config(args.data_config)
-    
+
+    if args.module == "policy":
+        policy_cfg = load_config(args.policy_config)
+        model_config = policy_cfg.get('model', {})
+        apply_policy_training_overrides(
+            training_config,
+            data_config,
+            policy_cfg.get('training', {}),
+        )
+    else:
+        model_config = load_config(args.model_config)
+        print("⚠️ 经典 VLA 模式目前未集成对应数据管线，如需使用请自行扩展。")
+
     print(f"Training config: {args.config}")
-    print(f"Model config: {args.model_config}")
-    print(f"Data config: {args.data_config}")
-    
-    # Set random seed
+    print(f"Data config:     {args.data_config}")
+    if args.module == "policy":
+        print(f"Policy config:   {args.policy_config}")
+    else:
+        print(f"Model config:    {args.model_config}")
+
     seed = training_config.get('seed', 42)
     pl.seed_everything(seed)
     print(f"Random seed: {seed}")
-    
-    # Create data loaders
+
     print("\nSetting up data loaders...")
-    
+    train_loader = val_loader = None
+
     try:
-        train_loader = get_carla_dataloader(
-            data_root=data_config['dataset']['data_root'],
-            split='train',
-            batch_size=data_config['train']['batch_size'],
-            num_workers=data_config['train']['num_workers'],
-            shuffle=data_config['train']['shuffle'],
-            image_size=tuple(data_config['dataset']['image_size']),
-        )
-        
-        val_loader = get_carla_dataloader(
-            data_root=data_config['dataset']['data_root'],
-            split='val',
-            batch_size=data_config['val']['batch_size'],
-            num_workers=data_config['val']['num_workers'],
-            shuffle=data_config['val']['shuffle'],
-            image_size=tuple(data_config['dataset']['image_size']),
-        )
-        
+        if args.module == "policy":
+            tokenizer_name = model_config.get('backbone', {}).get('model_name', 'microsoft/phi-2')
+            num_timesteps = model_config.get('action_head', {}).get('num_timesteps', 10)
+
+            train_loader = build_policy_dataloader(
+                data_config=deepcopy(data_config),
+                split='train',
+                tokenizer_name=tokenizer_name,
+                num_timesteps=num_timesteps,
+            )
+            val_loader = build_policy_dataloader(
+                data_config=deepcopy(data_config),
+                split='val',
+                tokenizer_name=tokenizer_name,
+                num_timesteps=num_timesteps,
+            )
+        else:
+            raise NotImplementedError("当前脚本尚未实现传统 VLA 模式的数据管线。")
+
         print(f"Train samples: {len(train_loader.dataset)}")
-        print(f"Val samples: {len(val_loader.dataset)}")
-    except Exception as e:
-        print(f"Warning: Could not load data - {e}")
-        print("Proceeding without data loaders (for testing purposes)")
-        train_loader = None
-        val_loader = None
-    
-    # Create model
+        print(f"Val samples:   {len(val_loader.dataset)}")
+    except Exception as exc:
+        print(f"Warning: Could not load data - {exc}")
+
     print("\nInitializing model...")
-    model = VLALightningModule(
-        model_config=model_config,
-        optimizer_config=training_config['optimizer'],
-        scheduler_config=training_config['scheduler'],
-        loss_config=training_config['loss'],
-    )
-    
-    # Setup callbacks and logger
+    if args.module == "policy":
+        model = VLAPolicyLightningModule(
+            model_config=model_config,
+            optimizer_config=training_config.get('optimizer', {}),
+            scheduler_config=training_config.get('scheduler', {}),
+            loss_config=training_config.get('loss', {}),
+        )
+    else:
+        model = VLALightningModule(
+            model_config=model_config,
+            optimizer_config=training_config['optimizer'],
+            scheduler_config=training_config['scheduler'],
+            loss_config=training_config['loss'],
+        )
+
     callbacks = setup_callbacks(training_config)
     logger = setup_logger(training_config)
-    
-    # Create trainer
+
     print("\nSetting up trainer...")
-    trainer_config = training_config['trainer']
+    trainer_config = training_config.get('trainer', {})
     trainer = pl.Trainer(
         max_epochs=trainer_config.get('max_epochs', 100),
         accelerator=trainer_config.get('accelerator', 'gpu'),
@@ -197,27 +274,26 @@ def main():
         enable_progress_bar=trainer_config.get('enable_progress_bar', True),
         deterministic=training_config.get('deterministic', False),
     )
-    
-    # Start training
+
     print("\n" + "=" * 60)
     print("Starting training...")
     print("=" * 60 + "\n")
-    
-    if train_loader is not None and val_loader is not None:
-        trainer.fit(
-            model,
-            train_dataloaders=train_loader,
-            val_dataloaders=val_loader,
-            ckpt_path=args.resume,
-        )
-        
-        print("\n" + "=" * 60)
-        print("Training completed!")
-        print("=" * 60)
-        print(f"Best model checkpoint: {callbacks[0].best_model_path}")
-    else:
-        print("\nSkipping training - no data available")
-        print("Please prepare CARLA dataset first")
+
+    if train_loader is None or val_loader is None:
+        print("✗ 数据加载失败，终止训练。请检查 datasets/carla 是否存在。")
+        return
+
+    trainer.fit(
+        model,
+        train_dataloaders=train_loader,
+        val_dataloaders=val_loader,
+        ckpt_path=args.resume,
+    )
+
+    print("\n" + "=" * 60)
+    print("Training completed!")
+    print("=" * 60)
+    print(f"Best model checkpoint: {callbacks[0].best_model_path}")
 
 
 if __name__ == "__main__":

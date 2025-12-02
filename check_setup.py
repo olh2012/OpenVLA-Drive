@@ -66,6 +66,8 @@ def main():
         "models.vla_model",
         "data.carla_dataset",
         "training.lightning_module",
+        "training.policy_lightning_module",
+        "training.rl_env",
         "evaluation.metrics",
     ]
     
@@ -82,9 +84,10 @@ def main():
         print()
         print("Next steps:")
         print("1. Install CARLA 0.9.15 from https://github.com/carla-simulator/carla/releases")
-        print("2. Collect data: python scripts/collect_data.py (when available)")
-        print("3. Train model: python scripts/train.py")
-        print("4. Evaluate: python evaluation/closed_loop_sim.py")
+        print("2. Collect data: python scripts/collect_carla_data.py")
+        print("3. Train policy: python scripts/train.py --module policy")
+        print("4. (Optional) RL fine-tune: python scripts/rl_finetune.py")
+        print("5. Evaluate: python evaluation/closed_loop_sim.py")
     else:
         print("✗ Some dependencies are missing")
         print("Run: pip install -r requirements.txt")

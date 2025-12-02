@@ -177,6 +177,23 @@ model.print_trainable_parameters()
 # 输出示例: Trainable: 2.5M / All: 2.7B (0.09%)
 ```
 
+#### 多任务辅助输出
+
+`VLADrivingPolicy` 支持多任务头（导航分类、避障得分、车道偏移等）。可在 `configs/policy_config.yaml -> model.multi_task` 中开启，推理时会额外返回：
+
+```python
+outputs = model.predict_trajectory(
+    image_tensors=images,
+    text_instructions=instructions,
+    return_aux=True,
+)
+trajectory = outputs['trajectory']          # [B, T, 2]
+multi_task = outputs.get('multi_task', {})  # dict: navigation_logits / lane_offset / obstacle_score
+labels = outputs.get('navigation_labels', [])
+```
+
+示例 `examples/test_policy.py` 已展示如何读取这些信号，便于后续多任务损失或可解释性分析。
+
 ### 数据准备
 
 #### CARLA 数据格式
@@ -234,6 +251,25 @@ for batch in dataloader:
     # 训练循环
     # ...
 ```
+
+#### 数据自动采集脚本（进行中任务）
+
+`scripts/collect_carla_data.py` 提供同步模式采集管线，可一键录制 CARLA 轨迹或在无仿真环境时生成伪数据：
+
+```bash
+# 在线采集（需要 CARLA Server）
+python scripts/collect_carla_data.py \
+  --host localhost --port 2000 \
+  --town Town05 \
+  --episodes 5 \
+  --frames-per-episode 800 \
+  --output-dir ./datasets/carla
+
+# 离线演示（自动生成伪数据）
+python scripts/collect_carla_data.py --offline --episodes 1 --frames-per-episode 50
+```
+
+脚本会按照 `data/DATA_FORMAT.txt` 生成 `images/` 与 `annotations.json`，可直接被 `CARLAVLADataset` 读取。
 
 ### 模型训练
 
@@ -293,13 +329,46 @@ python scripts/train.py --config configs/policy_config.yaml
 ### 评估和推理
 
 ```bash
-# 在 CARLA 中进行闭环评估
+# 在 CARLA 中进行闭环评估（自动统计碰撞/越线/路线完成度）
 python evaluation/closed_loop_sim.py \
     --checkpoint checkpoints/best_model.ckpt \
     --host localhost \
     --port 2000 \
-    --num_episodes 10
+    --num-episodes 5 \
+    --max-steps 800
 ```
+
+> 若本地未安装 CARLA，脚本会退化为离线 mock 模式，方便快速验证模型推理逻辑。
+
+#### 强化学习微调原型
+
+为推进「强化学习微调」路线图，新增轻量环境 `training/rl_env.py` 以及示例脚本：
+
+```bash
+# Dry-run：仅检查依赖，不执行训练
+python scripts/rl_finetune.py
+
+# 需要安装 stable-baselines3+gymnasium 后可启动正式训练
+python scripts/rl_finetune.py --vec-envs 4 --train-steps 10000
+```
+
+环境奖励由横向偏差/油门/刹车组合而成，可在无 CARLA 的情况下调试 RL 算法。
+
+#### 模型导出（计划任务推进）
+
+脚本 `scripts/export_policy.py` 可将训练好的 checkpoint 与配置打包，便于发布：
+
+```bash
+python scripts/export_policy.py \
+  --checkpoint checkpoints/best_model.ckpt \
+  --config configs/policy_config.yaml \
+  --output-dir release/openvla_policy
+
+# 若暂无权重，可使用 --mock 生成示例目录
+python scripts/export_policy.py --mock
+```
+
+导出目录包含 `policy_state.pt`、`metadata.json` 及配置文件，可直接上传至 HuggingFace / ModelScope。
 
 ## 配置说明
 
@@ -379,14 +448,19 @@ python check_setup.py
 
 ### 进行中 🚧
 - ⏳ CARLA 数据收集脚本实现
+  - `scripts/collect_carla_data.py` 已支持同步采集 + 离线伪数据 fallback
 - ⏳ 在 CARLA 上收集驾驶数据
 - ⏳ 模仿学习训练
 - ⏳ 完整的闭环评估
+  - `evaluation/closed_loop_sim.py` 接入 VLADrivingPolicy 并输出指标
 
 ### 计划中 📋
 - 📌 多任务学习（导航、避障、车道保持）
+  - ✅ 已提供可配置的多任务预测头，等待数据联合训练
 - 📌 强化学习微调
+  - ⚗️ `training/rl_env.py` + `scripts/rl_finetune.py` 可快速验证 PPO 管线
 - 📌 预训练模型发布
+  - 🧰 `scripts/export_policy.py` 可一键打包 state dict + metadata
 - 📌 性能优化和加速
 
 ## 引用

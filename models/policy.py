@@ -5,7 +5,7 @@ This module implements a vision-language-action policy for autonomous driving
 using pre-trained models (e.g., LLaVA, Phi-3-Vision) with LoRA adaptation.
 """
 
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, Optional, Tuple, Union, List
 
 import torch
 import torch.nn as nn
@@ -90,6 +90,52 @@ class ActionHead(nn.Module):
         return waypoints
 
 
+class MultiTaskHead(nn.Module):
+    """
+    辅助多任务头：支持分类 / 回归任务，用于导航、避障、车道保持等规划信号。
+    """
+
+    def __init__(self, input_dim: int, task_configs: Dict[str, Dict]):
+        super().__init__()
+        self.heads = nn.ModuleDict()
+        self.activations: Dict[str, str] = {}
+        for name, cfg in task_configs.items():
+            hidden_dim = cfg.get('hidden_dim', 256)
+            output_dim = cfg.get('output_dim', 1)
+            dropout = cfg.get('dropout', 0.1)
+            layers = [
+                nn.Linear(input_dim, hidden_dim),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim, output_dim),
+            ]
+            self.heads[name] = nn.Sequential(*layers)
+            self.activations[name] = cfg.get('activation', 'none')
+
+    def forward(self, features: torch.Tensor) -> Dict[str, torch.Tensor]:
+        outputs: Dict[str, torch.Tensor] = {}
+        for name, head in self.heads.items():
+            raw = head(features)
+            act = self.activations.get(name, 'none')
+            if act == 'sigmoid':
+                outputs[name] = torch.sigmoid(raw)
+            elif act == 'tanh':
+                outputs[name] = torch.tanh(raw)
+            else:
+                outputs[name] = raw
+        return outputs
+
+
+DEFAULT_NAVIGATION_CLASSES = [
+    "follow_lane",
+    "turn_left",
+    "turn_right",
+    "stop",
+    "lane_change_left",
+    "lane_change_right",
+]
+
+
 class VLADrivingPolicy(nn.Module):
     """
     Vision-Language-Action Driving Policy.
@@ -109,6 +155,7 @@ class VLADrivingPolicy(nn.Module):
         lora_config: Optional[Dict] = None,
         freeze_vision_tower: bool = True,
         freeze_llm: bool = True,
+        multi_task_config: Optional[Dict] = None,
     ):
         """
         Args:
@@ -127,6 +174,11 @@ class VLADrivingPolicy(nn.Module):
         self.model_name = model_name
         self.num_timesteps = num_timesteps
         self.use_lora = use_lora
+        self.multi_task_cfg = multi_task_config or {}
+        self.navigation_classes: List[str] = self.multi_task_cfg.get(
+            'navigation_classes',
+            DEFAULT_NAVIGATION_CLASSES,
+        )
         
         # Load vision encoder (CLIP)
         print(f"Loading vision encoder: {vision_model_name}")
@@ -210,6 +262,17 @@ class VLADrivingPolicy(nn.Module):
             num_timesteps=num_timesteps,
             dropout=0.1,
         )
+
+        # Multi-task heads (可选)
+        self.enable_multi_task = self.multi_task_cfg.get('enabled', False)
+        if self.enable_multi_task:
+            task_configs = self._build_multi_task_config()
+            self.multi_task_head = MultiTaskHead(
+                input_dim=self.llm_hidden_size,
+                task_configs=task_configs,
+            )
+        else:
+            self.multi_task_head = None
         
         # Load processor/tokenizer
         try:
@@ -324,6 +387,10 @@ class VLADrivingPolicy(nn.Module):
             'trajectory': trajectory,
             'hidden_states': fused_features,
         }
+
+        if self.enable_multi_task and self.multi_task_head is not None:
+            output['multi_task'] = self.multi_task_head(fused_features)
+            output['navigation_labels'] = self.navigation_classes
         
         # Optionally include language model logits
         if return_language_output and hasattr(llm_outputs, 'logits'):
@@ -335,7 +402,8 @@ class VLADrivingPolicy(nn.Module):
         self,
         image_tensors: torch.Tensor,
         text_instructions: list,
-    ) -> torch.Tensor:
+        return_aux: bool = False,
+    ):
         """
         Convenience method for trajectory prediction during inference.
         
@@ -376,7 +444,7 @@ class VLADrivingPolicy(nn.Module):
                 return_language_output=False,
             )
         
-        return outputs['trajectory']
+        return outputs if return_aux else outputs['trajectory']
     
     def get_trainable_parameters(self) -> Dict[str, torch.Tensor]:
         """
@@ -407,3 +475,29 @@ class VLADrivingPolicy(nn.Module):
         print(f"\nTrainable params: {trainable_params:,} || "
               f"All params: {all_params:,} || "
               f"Trainable %: {100 * trainable_params / all_params:.2f}%")
+
+    # ------------------------------------------------------------------ helpers
+    def _build_multi_task_config(self) -> Dict[str, Dict]:
+        base_tasks = {
+            'navigation_logits': {
+                'type': 'classification',
+                'output_dim': len(self.navigation_classes),
+                'hidden_dim': self.multi_task_cfg.get('hidden_dim', 256),
+                'activation': 'none',
+            },
+            'obstacle_score': {
+                'type': 'regression',
+                'output_dim': 1,
+                'hidden_dim': self.multi_task_cfg.get('hidden_dim', 256),
+                'activation': 'sigmoid',
+            },
+            'lane_offset': {
+                'type': 'regression',
+                'output_dim': 1,
+                'hidden_dim': self.multi_task_cfg.get('hidden_dim', 256),
+                'activation': 'tanh',
+            },
+        }
+        user_tasks = self.multi_task_cfg.get('tasks', {})
+        base_tasks.update(user_tasks)
+        return base_tasks

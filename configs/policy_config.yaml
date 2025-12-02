@@ -30,6 +30,25 @@ model:
     num_layers: 3
     dropout: 0.1
 
+  # Multi-task heads (导航 / 避障 / 车道保持)
+  multi_task:
+    enabled: true
+    hidden_dim: 256
+    navigation_classes:
+      - follow_lane
+      - turn_left
+      - turn_right
+      - stop
+      - lane_change_left
+      - lane_change_right
+    tasks:
+      safety_margin:
+        output_dim: 1
+        activation: sigmoid
+      curvature:
+        output_dim: 1
+        activation: tanh
+
 # Training configuration
 training:
   batch_size: 8
