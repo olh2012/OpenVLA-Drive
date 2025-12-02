@@ -55,6 +55,7 @@ def main():
         lora_config = model_config.get('lora', {})
         action_config = model_config.get('action_head', {})
         backbone_config = model_config.get('backbone', {})
+        multi_task_config = model_config.get('multi_task', {})
     else:
         print("Config file not found, using default configuration")
         lora_config = {'r': 16, 'lora_alpha': 32, 'lora_dropout': 0.05}
@@ -63,6 +64,7 @@ def main():
             'model_name': 'microsoft/phi-2',  # Smaller model for testing
             'vision_model_name': 'openai/clip-vit-base-patch32',
         }
+        multi_task_config = {'enabled': True}
     
     # Initialize model
     print("\nInitializing VLADrivingPolicy...")
@@ -78,6 +80,7 @@ def main():
         lora_config=lora_config,
         freeze_vision_tower=backbone_config.get('freeze_vision_tower', True),
         freeze_llm=backbone_config.get('freeze_llm', True),
+        multi_task_config=multi_task_config,
     )
     
     print("\n" + "=" * 70)
@@ -117,11 +120,13 @@ def main():
     
     try:
         with torch.no_grad():
-            # Method 1: Using predict_trajectory (recommended for inference)
-            trajectory = model.predict_trajectory(
+            # Method 1: Using predict_trajectory with auxiliary outputs
+            outputs = model.predict_trajectory(
                 image_tensors=images,
-                text_instructions=instructions
+                text_instructions=instructions,
+                return_aux=True,
             )
+            trajectory = outputs['trajectory']
             
             print(f"\nOutput:")
             print(f"  Predicted trajectory shape: {trajectory.shape}")
@@ -138,6 +143,20 @@ def main():
             print(f"  Waypoint {action_config.get('num_timesteps', 10)-1}: "
                   f"x={trajectory[0, -1, 0].item():.3f}, "
                   f"y={trajectory[0, -1, 1].item():.3f}")
+            
+            if 'multi_task' in outputs:
+                mt = outputs['multi_task']
+                nav_labels = outputs.get('navigation_labels', [])
+                print("\nMulti-task heads:")
+                if 'navigation_logits' in mt:
+                    probs = torch.softmax(mt['navigation_logits'][0], dim=-1)
+                    top_idx = torch.argmax(probs).item()
+                    label = nav_labels[top_idx] if nav_labels else f"class_{top_idx}"
+                    print(f"  - Navigation: {label} ({probs[top_idx].item():.2f})")
+                if 'lane_offset' in mt:
+                    print(f"  - Lane offset: {mt['lane_offset'][0, 0].item():+.3f}")
+                if 'obstacle_score' in mt:
+                    print(f"  - Obstacle score: {mt['obstacle_score'][0, 0].item():.3f}")
             
             print("\n✓ Inference successful!")
             
