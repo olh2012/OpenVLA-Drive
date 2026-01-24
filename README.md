@@ -399,6 +399,10 @@ training:
   max_epochs: 50
 ```
 
+### 基线配置 (Phi-2 + LoRA)
+
+`configs/baseline_phi2_lora.yaml` 提供轻量基线配置，可用于快速验证训练流程。
+
 ## 配置参数
 
 支持的预训练模型：Phi-2、LLaVA-1.5-7B、Phi-3-Vision
