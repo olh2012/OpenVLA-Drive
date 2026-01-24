@@ -317,7 +317,7 @@ class CarlaDataCollector:
         for idx in range(len(records) - future):
             ego = records[idx]
             future_points = [records[idx + j]["location"] for j in range(future)]
-            trajectory = [self._world_to_ego(ego, point) for point in future_points]
+            trajectory = [point.astype(np.float32).tolist() for point in future_points]
             ego_pose = [float(ego["location"][0]), float(ego["location"][1]), float(ego["yaw"])]
             self.writer.add_sample(
                 image_rgb=ego["image"],
@@ -344,17 +344,6 @@ class CarlaDataCollector:
         array = array.reshape((image.height, image.width, 4))
         rgb = array[:, :, :3][:, :, ::-1].copy()
         return rgb
-
-    @staticmethod
-    def _world_to_ego(ego: Dict, point: np.ndarray) -> List[float]:
-        origin = ego["location"]
-        yaw = ego["yaw"]
-        delta = point - origin
-        cos_yaw = math.cos(-yaw)
-        sin_yaw = math.sin(-yaw)
-        x = delta[0] * cos_yaw - delta[1] * sin_yaw
-        y = delta[0] * sin_yaw + delta[1] * cos_yaw
-        return [float(x), float(y)]
 
     def _cleanup(self):
         if self.camera is not None:
