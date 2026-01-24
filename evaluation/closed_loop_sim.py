@@ -10,14 +10,16 @@ CARLA 闭环评估脚本
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import os
 import queue
 import random
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import torch
@@ -33,6 +35,11 @@ try:
     import carla
 except ImportError:  # pragma: no cover - 运行环境可能没有 CARLA
     carla = None
+
+try:  # pragma: no cover - CARLA 环境可选
+    from agents.navigation.global_route_planner import GlobalRoutePlanner
+except Exception:
+    GlobalRoutePlanner = None
 
 
 CLIP_TRANSFORM = transforms.Compose(
@@ -55,6 +62,14 @@ DEFAULT_COMMANDS = [
     "Change lane to the left",
     "Change lane to the right",
 ]
+
+
+def seed_everything(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 
 def load_policy(checkpoint: str, device: torch.device) -> VLADrivingPolicy:
@@ -95,12 +110,16 @@ class CARLASimulator:
         town: str = "Town03",
         fps: float = 20.0,
         timeout: float = 10.0,
+        target_distance_m: float = 200.0,
+        red_light_speed_kmh: float = 5.0,
     ):
         self.host = host
         self.port = port
         self.town = town
         self.fps = fps
         self.timeout = timeout
+        self.target_distance_m = target_distance_m
+        self.red_light_speed_kmh = red_light_speed_kmh
 
         self.online = carla is not None
         self.client: Optional["carla.Client"] = None
@@ -114,7 +133,12 @@ class CARLASimulator:
 
         self.collisions = 0
         self.lane_events = 0
+        self.red_light_violations = 0
         self.total_frames = 0
+        self.distance_traveled_m = 0.0
+        self.route_length_m = target_distance_m
+        self.last_location: Optional["carla.Location"] = None
+        self._last_red_light_id: Optional[int] = None
 
     def setup_world(self):
         if not self.online:
@@ -143,7 +167,12 @@ class CARLASimulator:
     def begin_episode(self):
         self.collisions = 0
         self.lane_events = 0
+        self.red_light_violations = 0
         self.total_frames = 0
+        self.distance_traveled_m = 0.0
+        self.route_length_m = self.target_distance_m
+        self.last_location = None
+        self._last_red_light_id = None
 
         if not self.online:
             return
@@ -160,6 +189,8 @@ class CARLASimulator:
         self._spawn_camera(bp_lib)
         self._spawn_collision_sensor(bp_lib)
         self._spawn_lane_sensor(bp_lib)
+        self.last_location = self.vehicle.get_location()
+        self.route_length_m = self._estimate_route_length(self.last_location)
         print(f"✓ Episode 初始化完成 @ {spawn_point.location}")
 
     def _spawn_camera(self, bp_lib):
@@ -190,7 +221,9 @@ class CARLASimulator:
         self.total_frames += 1
         if not self.online:
             mock_image = np.random.randint(0, 255, size=(600, 800, 3), dtype=np.uint8)
-            return {"rgb": mock_image, "speed": 30.0}
+            speed = 30.0
+            self.distance_traveled_m += (speed / 3.6) * (1.0 / self.fps)
+            return {"rgb": mock_image, "speed": speed}
 
         assert self.world is not None
         frame_id = self.world.tick()
@@ -198,6 +231,8 @@ class CARLASimulator:
         rgb = self._carla_image_to_numpy(image)
         velocity = self.vehicle.get_velocity()
         speed = math.sqrt(velocity.x**2 + velocity.y**2 + velocity.z**2) * 3.6
+        self._update_distance(self.vehicle.get_location())
+        self._update_red_light_violation(speed)
         return {"rgb": rgb, "speed": speed}
 
     def apply_control(self, steering: float, throttle: float, brake: float):
@@ -217,15 +252,20 @@ class CARLASimulator:
 
         infraction = compute_infraction_score(
             collisions=collisions,
-            red_light_violations=0,  # TODO: 集成红灯检测
+            red_light_violations=self.red_light_violations,
             off_road_frames=off_road,
             total_frames=total,
         )
         completion = compute_route_completion(
-            waypoints_reached=self.total_frames,
-            total_waypoints=self.total_frames,
+            waypoints_reached=min(self.distance_traveled_m, self.route_length_m),
+            total_waypoints=self.route_length_m,
         )
-        return {**infraction, "route_completion": completion}
+        return {
+            **infraction,
+            "route_completion": completion,
+            "distance_traveled_m": float(self.distance_traveled_m),
+            "route_length_m": float(self.route_length_m),
+        }
 
     def end_episode(self):
         if not self.online:
@@ -257,6 +297,54 @@ class CARLASimulator:
         array = np.frombuffer(image.raw_data, dtype=np.uint8)
         array = array.reshape((image.height, image.width, 4))
         return array[:, :, :3][:, :, ::-1].copy()
+
+    def _update_distance(self, location: "carla.Location"):
+        if self.last_location is None:
+            self.last_location = location
+            return
+        self.distance_traveled_m += location.distance(self.last_location)
+        self.last_location = location
+
+    def _update_red_light_violation(self, speed_kmh: float):
+        if not self.online or self.vehicle is None:
+            return
+        if not hasattr(self.vehicle, "is_at_traffic_light"):
+            return
+        if self.vehicle.is_at_traffic_light():
+            traffic_light = self.vehicle.get_traffic_light()
+            if traffic_light is None:
+                return
+            if traffic_light.state == carla.TrafficLightState.Red and speed_kmh > self.red_light_speed_kmh:
+                light_id = int(traffic_light.id)
+                if self._last_red_light_id != light_id:
+                    self.red_light_violations += 1
+                    self._last_red_light_id = light_id
+        else:
+            self._last_red_light_id = None
+
+    def _estimate_route_length(self, start_location: "carla.Location") -> float:
+        if not self.online or self.world is None or GlobalRoutePlanner is None:
+            return float(self.target_distance_m)
+        try:
+            carla_map = self.world.get_map()
+            spawn_points = carla_map.get_spawn_points()
+            if not spawn_points:
+                return float(self.target_distance_m)
+            destination = random.choice(spawn_points).location
+            planner = GlobalRoutePlanner(carla_map, sampling_resolution=2.0)
+            route = planner.trace_route(start_location, destination)
+            if not route:
+                return float(self.target_distance_m)
+            distance = 0.0
+            prev_location = route[0][0].transform.location
+            for waypoint, _ in route[1:]:
+                location = waypoint.transform.location
+                distance += location.distance(prev_location)
+                prev_location = location
+            return max(distance, 1.0)
+        except Exception as exc:  # pragma: no cover - 依赖 CARLA 环境
+            print(f"⚠️ 路径规划不可用，使用默认长度 ({exc})")
+            return float(self.target_distance_m)
 
 
 class VLAEvaluator:
@@ -303,6 +391,55 @@ class VLAEvaluator:
         return metrics
 
 
+class MetricsLogger:
+    """记录闭环评估的单次与汇总指标。"""
+
+    def __init__(self, log_dir: Optional[str], args: argparse.Namespace, online: bool):
+        self.log_dir = Path(log_dir) if log_dir else None
+        self.episode_records: List[Dict[str, Any]] = []
+        if self.log_dir is None:
+            self.enabled = False
+            return
+        self.enabled = True
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        run_meta = {
+            "created_at": datetime.utcnow().isoformat() + "Z",
+            "online_mode": online,
+            "args": vars(args),
+        }
+        self._write_json(self.log_dir / "run_meta.json", run_meta)
+
+    def log_episode(self, episode_idx: int, instruction: str, metrics: Dict[str, float]):
+        if not self.enabled:
+            return
+        record = {
+            "episode": episode_idx,
+            "instruction": instruction,
+            "metrics": metrics,
+        }
+        self.episode_records.append(record)
+        with open(self.log_dir / "episodes.jsonl", "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=True) + "\n")
+
+    def finalize(self):
+        if not self.enabled or not self.episode_records:
+            return
+        metrics_list = [record["metrics"] for record in self.episode_records]
+        keys = metrics_list[0].keys()
+        summary = {
+            "num_episodes": len(metrics_list),
+            "metrics_mean": {
+                key: float(np.mean([m[key] for m in metrics_list])) for key in keys
+            },
+        }
+        self._write_json(self.log_dir / "summary.json", summary)
+
+    @staticmethod
+    def _write_json(path: Path, payload: Dict[str, Any]):
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=True)
+
+
 def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="CARLA 闭环评估")
     parser.add_argument("--checkpoint", type=str, required=True, help="策略模型 checkpoint 路径")
@@ -312,6 +449,10 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--fps", type=float, default=20.0, help="仿真帧率")
     parser.add_argument("--num-episodes", type=int, default=3, help="评估 episode 数量")
     parser.add_argument("--max-steps", type=int, default=600, help="每个 episode 的最大步数")
+    parser.add_argument("--target-distance", type=float, default=200.0, help="期望路线长度(米)")
+    parser.add_argument("--red-light-speed", type=float, default=5.0, help="红灯判定速度阈值(km/h)")
+    parser.add_argument("--seed", type=int, default=42, help="随机种子")
+    parser.add_argument("--log-dir", type=str, default=None, help="日志输出目录")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     return parser
 
@@ -320,12 +461,21 @@ def main():
     parser = build_argparser()
     args = parser.parse_args()
     device = torch.device(args.device)
+    seed_everything(args.seed)
 
-    simulator = CARLASimulator(host=args.host, port=args.port, town=args.town, fps=args.fps)
+    simulator = CARLASimulator(
+        host=args.host,
+        port=args.port,
+        town=args.town,
+        fps=args.fps,
+        target_distance_m=args.target_distance,
+        red_light_speed_kmh=args.red_light_speed,
+    )
     simulator.setup_world()
 
     policy = load_policy(args.checkpoint, device)
     evaluator = VLAEvaluator(policy, simulator, device)
+    logger = MetricsLogger(args.log_dir, args, simulator.online)
 
     commands = DEFAULT_COMMANDS
     results: List[Dict[str, float]] = []
@@ -334,6 +484,7 @@ def main():
         print(f"\n=== Episode {episode_idx + 1}/{args.num_episodes}: '{instruction}' ===")
         metrics = evaluator.run_episode(instruction, max_steps=args.max_steps)
         results.append(metrics)
+        logger.log_episode(episode_idx + 1, instruction, metrics)
 
     if results:
         print("\n=== 评估汇总 ===")
@@ -343,6 +494,7 @@ def main():
             print(f"{key}: {avg:.4f}")
 
     simulator.teardown()
+    logger.finalize()
     print("\n评估完成 ✅")
 
 

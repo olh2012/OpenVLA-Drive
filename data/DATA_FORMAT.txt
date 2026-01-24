@@ -43,6 +43,13 @@ Annotation Format (annotations.json)
   }
 }
 
+Dataset Manifest (dataset_manifest.jsonl)
+----------------------------------------
+
+Optional manifest file for dataset versioning. Each line is a JSON record:
+
+{"run_id":"20250101_120000","created_at":"2025-01-01T12:00:00Z","split":"train","dataset_version":"v1.1","online_mode":true,"num_samples":1200,"added_samples":1200,"image_dir":"train/images","annotation_file":"train/annotations.json","args":{...}}
+
 Fields:
 - image: Relative path to the image file
 - command: Navigation instruction text
@@ -67,6 +74,7 @@ Trajectory Format
 - Coordinate system:
   - If ego_position is provided: absolute world coordinates
   - If ego_position is NOT provided: relative to first waypoint
+- scripts/collect_carla_data.py will store world coordinates with ego_position
 - Time horizon: Typically 2-5 seconds into the future
 - Sampling rate: 0.1-0.5 seconds per waypoint
 
@@ -91,13 +99,14 @@ Data Collection from CARLA
    ./CarlaUE4.sh
 
 2. Run data collection script (to be implemented):
-   python scripts/collect_data.py --output ./datasets/carla --num-episodes 100
+   python scripts/collect_carla_data.py --output-dir ./datasets/carla --episodes 100
 
 3. The script should record:
    - RGB camera images (front view)
    - Vehicle position and orientation
    - Future trajectory (ground truth from expert driver)
    - High-level navigation command
+4. The script will append dataset_manifest.jsonl for version tracking
 
 
 Normalization Details

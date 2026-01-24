@@ -60,7 +60,10 @@ def compute_route_completion(
     Returns:
         Completion percentage [0, 100]
     """
-    return (waypoints_reached / total_waypoints) * 100.0
+    if total_waypoints <= 0:
+        return 0.0
+    completion = (waypoints_reached / total_waypoints) * 100.0
+    return float(np.clip(completion, 0.0, 100.0))
 
 
 def compute_infraction_score(
@@ -81,9 +84,11 @@ def compute_infraction_score(
     Returns:
         Dict of infraction metrics
     """
+    safe_total = max(total_frames, 1)
+    off_road_ratio = off_road_frames / safe_total
     return {
         'collision_count': collisions,
         'red_light_violations': red_light_violations,
-        'off_road_percentage': (off_road_frames / total_frames) * 100.0,
-        'infraction_score': collisions + red_light_violations + (off_road_frames / total_frames),
+        'off_road_percentage': off_road_ratio * 100.0,
+        'infraction_score': collisions + red_light_violations + off_road_ratio,
     }
