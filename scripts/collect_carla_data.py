@@ -15,10 +15,12 @@ import json
 import math
 import queue
 import random
+import shutil
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 from PIL import Image
@@ -61,18 +63,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--sensor-offset-z", type=float, default=1.5, help="摄像头高度")
     parser.add_argument("--offline", action="store_true", help="强制使用离线模式（无需 CARLA）")
     parser.add_argument("--seed", type=int, default=42, help="随机种子（离线模式）")
+    parser.add_argument("--dataset-version", type=str, default="v1.1", help="数据集版本标记")
+    parser.add_argument("--run-id", type=str, default=None, help="采集运行 ID（默认时间戳）")
+    parser.add_argument("--overwrite", action="store_true", help="覆盖已有数据集内容")
     return parser.parse_args()
 
 
 class DatasetWriter:
     """负责落盘 images 与 annotations.json"""
 
-    def __init__(self, root_dir: Path, split: str):
+    def __init__(self, root_dir: Path, split: str, overwrite: bool = False):
         self.split_dir = Path(root_dir) / split
+        if overwrite and self.split_dir.exists():
+            shutil.rmtree(self.split_dir)
         self.image_dir = self.split_dir / "images"
         self.image_dir.mkdir(parents=True, exist_ok=True)
+        self.annotations_path = self.split_dir / "annotations.json"
         self.annotations: Dict[str, Dict] = {}
         self.sample_index = 0
+        self.initial_count = 0
+        self._load_existing_annotations()
 
     def add_sample(
         self,
@@ -93,12 +103,45 @@ class DatasetWriter:
         self.sample_index += 1
 
     def finalize(self):
-        annotation_path = self.split_dir / "annotations.json"
-        with open(annotation_path, "w", encoding="utf-8") as f:
+        with open(self.annotations_path, "w", encoding="utf-8") as f:
             json.dump(self.annotations, f, indent=2)
-        print(f"✓ 写入标注文件: {annotation_path}")
+        print(f"✓ 写入标注文件: {self.annotations_path}")
         print(f"✓ 图像目录: {self.image_dir}")
         print(f"✓ 样本数量: {len(self.annotations)}")
+
+    def added_samples(self) -> int:
+        return len(self.annotations) - self.initial_count
+
+    def _load_existing_annotations(self):
+        if not self.annotations_path.exists():
+            return
+        try:
+            with open(self.annotations_path, "r", encoding="utf-8") as f:
+                self.annotations = json.load(f)
+            existing_ids = [int(key) for key in self.annotations.keys() if key.isdigit()]
+            if existing_ids:
+                self.sample_index = max(existing_ids) + 1
+            else:
+                self.sample_index = len(self.annotations)
+            self.initial_count = len(self.annotations)
+            print(f"✓ 发现已有标注 {self.initial_count} 条，继续追加写入")
+        except Exception as exc:
+            print(f"⚠️ 读取已有标注失败，将从头写入 ({exc})")
+            self.annotations = {}
+            self.sample_index = 0
+            self.initial_count = 0
+
+
+class ManifestWriter:
+    """追加写入数据集版本清单。"""
+
+    def __init__(self, root_dir: Path):
+        self.manifest_path = Path(root_dir) / "dataset_manifest.jsonl"
+
+    def append(self, record: Dict[str, Any]):
+        with open(self.manifest_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=True) + "\n")
+        print(f"✓ 写入版本清单: {self.manifest_path}")
 
 
 class OfflineDataCollector:
@@ -331,7 +374,9 @@ class CarlaDataCollector:
 def main():
     args = parse_args()
     commands = DEFAULT_COMMANDS
-    writer = DatasetWriter(args.output_dir, args.split)
+    run_id = args.run_id or datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    writer = DatasetWriter(args.output_dir, args.split, overwrite=args.overwrite)
+    manifest = ManifestWriter(args.output_dir)
 
     online_mode = not args.offline and carla is not None
 
@@ -349,6 +394,20 @@ def main():
             commands=commands,
         )
         offline.run()
+
+    record = {
+        "run_id": run_id,
+        "created_at": datetime.utcnow().isoformat() + "Z",
+        "split": args.split,
+        "dataset_version": args.dataset_version,
+        "online_mode": online_mode,
+        "num_samples": len(writer.annotations),
+        "added_samples": writer.added_samples(),
+        "image_dir": str(Path(args.split) / "images"),
+        "annotation_file": str(Path(args.split) / "annotations.json"),
+        "args": vars(args),
+    }
+    manifest.append(record)
 
 
 if __name__ == "__main__":
