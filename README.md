@@ -271,6 +271,15 @@ python scripts/collect_carla_data.py --offline --episodes 1 --frames-per-episode
 
 脚本会按照 `data/DATA_FORMAT.txt` 生成 `images/` 与 `annotations.json`，可直接被 `CARLAVLADataset` 读取。
 
+采集完成后会追加 `dataset_manifest.jsonl` 版本清单，支持参数：
+
+```bash
+python scripts/collect_carla_data.py \
+  --dataset-version v1.1 \
+  --run-id 20250101_120000 \
+  --overwrite
+```
+
 ### 模型训练
 
 #### 使用 PyTorch Lightning 训练
