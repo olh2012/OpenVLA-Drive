@@ -112,6 +112,8 @@ class CARLASimulator:
         timeout: float = 10.0,
         target_distance_m: float = 200.0,
         red_light_speed_kmh: float = 5.0,
+        spawn_index: Optional[int] = None,
+        destination_index: Optional[int] = None,
     ):
         self.host = host
         self.port = port
@@ -120,6 +122,8 @@ class CARLASimulator:
         self.timeout = timeout
         self.target_distance_m = target_distance_m
         self.red_light_speed_kmh = red_light_speed_kmh
+        self.spawn_index = spawn_index
+        self.destination_index = destination_index
 
         self.online = carla is not None
         self.client: Optional["carla.Client"] = None
@@ -139,6 +143,7 @@ class CARLASimulator:
         self.route_length_m = target_distance_m
         self.last_location: Optional["carla.Location"] = None
         self._last_red_light_id: Optional[int] = None
+        self.destination_location: Optional["carla.Location"] = None
 
     def setup_world(self):
         if not self.online:
@@ -180,7 +185,13 @@ class CARLASimulator:
         assert self.world is not None
         bp_lib = self.world.get_blueprint_library()
         vehicle_bp = bp_lib.filter("vehicle.tesla.model3")[0]
-        spawn_point = random.choice(self.world.get_map().get_spawn_points())
+        spawn_points = self.world.get_map().get_spawn_points()
+        if not spawn_points:
+            raise RuntimeError("未找到可用 spawn points")
+        if self.spawn_index is not None:
+            spawn_point = spawn_points[self.spawn_index % len(spawn_points)]
+        else:
+            spawn_point = random.choice(spawn_points)
         self.vehicle = self.world.try_spawn_actor(vehicle_bp, spawn_point)
         if self.vehicle is None:
             raise RuntimeError("Ego 车辆生成失败，请重试")
@@ -190,7 +201,8 @@ class CARLASimulator:
         self._spawn_collision_sensor(bp_lib)
         self._spawn_lane_sensor(bp_lib)
         self.last_location = self.vehicle.get_location()
-        self.route_length_m = self._estimate_route_length(self.last_location)
+        self.destination_location = self._select_destination(spawn_points)
+        self.route_length_m = self._estimate_route_length(self.last_location, self.destination_location)
         print(f"✓ Episode 初始化完成 @ {spawn_point.location}")
 
     def _spawn_camera(self, bp_lib):
@@ -322,15 +334,24 @@ class CARLASimulator:
         else:
             self._last_red_light_id = None
 
-    def _estimate_route_length(self, start_location: "carla.Location") -> float:
+    def _select_destination(self, spawn_points: List["carla.Transform"]) -> Optional["carla.Location"]:
+        if not self.online or not spawn_points:
+            return None
+        if self.destination_index is not None:
+            return spawn_points[self.destination_index % len(spawn_points)].location
+        return random.choice(spawn_points).location
+
+    def _estimate_route_length(
+        self,
+        start_location: "carla.Location",
+        destination: Optional["carla.Location"],
+    ) -> float:
         if not self.online or self.world is None or GlobalRoutePlanner is None:
             return float(self.target_distance_m)
         try:
-            carla_map = self.world.get_map()
-            spawn_points = carla_map.get_spawn_points()
-            if not spawn_points:
+            if destination is None:
                 return float(self.target_distance_m)
-            destination = random.choice(spawn_points).location
+            carla_map = self.world.get_map()
             planner = GlobalRoutePlanner(carla_map, sampling_resolution=2.0)
             route = planner.trace_route(start_location, destination)
             if not route:
@@ -451,6 +472,8 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--max-steps", type=int, default=600, help="每个 episode 的最大步数")
     parser.add_argument("--target-distance", type=float, default=200.0, help="期望路线长度(米)")
     parser.add_argument("--red-light-speed", type=float, default=5.0, help="红灯判定速度阈值(km/h)")
+    parser.add_argument("--spawn-index", type=int, default=None, help="固定起点索引（可选）")
+    parser.add_argument("--destination-index", type=int, default=None, help="固定终点索引（可选）")
     parser.add_argument("--seed", type=int, default=42, help="随机种子")
     parser.add_argument("--log-dir", type=str, default=None, help="日志输出目录")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
@@ -470,6 +493,8 @@ def main():
         fps=args.fps,
         target_distance_m=args.target_distance,
         red_light_speed_kmh=args.red_light_speed,
+        spawn_index=args.spawn_index,
+        destination_index=args.destination_index,
     )
     simulator.setup_world()
 

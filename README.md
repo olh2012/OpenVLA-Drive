@@ -349,6 +349,16 @@ python evaluation/closed_loop_sim.py \
 
 > 若本地未安装 CARLA，脚本会退化为离线 mock 模式，方便快速验证模型推理逻辑。
 
+可使用固定起终点提升可复现性：
+
+```bash
+python evaluation/closed_loop_sim.py \
+  --checkpoint checkpoints/best_model.ckpt \
+  --spawn-index 0 \
+  --destination-index 10 \
+  --seed 42
+```
+
 ```bash
 # 开环评估（ADE/FDE）
 python evaluation/open_loop_eval.py \
