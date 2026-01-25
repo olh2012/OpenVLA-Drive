@@ -358,6 +358,14 @@ python evaluation/open_loop_eval.py \
   --output ./reports/open_loop.json
 ```
 
+```bash
+# 生成迭代评估报表（合并开环+闭环指标）
+python evaluation/eval_report.py \
+  --open-loop ./reports/open_loop.json \
+  --closed-loop ./logs/closed_loop/summary.json \
+  --output ./reports/eval_report.md
+```
+
 #### 强化学习微调原型
 
 为推进「强化学习微调」路线图，新增轻量环境 `training/rl_env.py` 以及示例脚本：
