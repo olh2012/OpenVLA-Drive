@@ -349,6 +349,15 @@ python evaluation/closed_loop_sim.py \
 
 > 若本地未安装 CARLA，脚本会退化为离线 mock 模式，方便快速验证模型推理逻辑。
 
+```bash
+# 开环评估（ADE/FDE）
+python evaluation/open_loop_eval.py \
+  --checkpoint checkpoints/best_model.ckpt \
+  --config configs/policy_config.yaml \
+  --split val \
+  --output ./reports/open_loop.json
+```
+
 #### 强化学习微调原型
 
 为推进「强化学习微调」路线图，新增轻量环境 `training/rl_env.py` 以及示例脚本：
