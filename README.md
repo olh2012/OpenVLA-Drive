@@ -358,6 +358,8 @@ python evaluation/closed_loop_sim.py \
 
 > 若本地未安装 CARLA，脚本会退化为离线 mock 模式，方便快速验证模型推理逻辑。
 
+默认会在 `logs/closed_loop/<timestamp>` 输出评估日志，如需自定义目录可指定 `--log-dir`。
+
 可使用固定起终点提升可复现性：
 
 ```bash
