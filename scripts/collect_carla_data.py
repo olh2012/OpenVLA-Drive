@@ -77,6 +77,16 @@ def parse_csv_list(value: Optional[str]) -> List[str]:
     return [item.strip() for item in value.split(",") if item.strip()]
 
 
+def serialize_args(args: argparse.Namespace) -> Dict[str, Any]:
+    serializable: Dict[str, Any] = {}
+    for key, value in vars(args).items():
+        if isinstance(value, Path):
+            serializable[key] = str(value)
+        else:
+            serializable[key] = value
+    return serializable
+
+
 class DatasetWriter:
     """负责落盘 images 与 annotations.json"""
 
@@ -439,7 +449,7 @@ def main():
             "added_samples": added_samples,
             "image_dir": str(Path(args.split) / "images"),
             "annotation_file": str(Path(args.split) / "annotations.json"),
-            "args": vars(run_args),
+            "args": serialize_args(run_args),
         }
         manifest.append(record)
 
