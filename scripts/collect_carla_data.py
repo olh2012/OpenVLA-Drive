@@ -50,6 +50,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", type=str, default="localhost", help="CARLA 主机地址")
     parser.add_argument("--port", type=int, default=2000, help="CARLA 端口")
     parser.add_argument("--town", type=str, default="Town03", help="CARLA 地图")
+    parser.add_argument("--towns", type=str, default=None, help="多个地图，用逗号分隔")
+    parser.add_argument("--weather-presets", type=str, default=None, help="天气列表，用逗号分隔")
     parser.add_argument("--split", type=str, default="train", choices=["train", "val", "test"], help="数据集子目录")
     parser.add_argument("--episodes", type=int, default=2, help="采集 episode 数量")
     parser.add_argument("--frames-per-episode", type=int, default=600, help="每个 episode 采集的帧数")
@@ -67,6 +69,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-id", type=str, default=None, help="采集运行 ID（默认时间戳）")
     parser.add_argument("--overwrite", action="store_true", help="覆盖已有数据集内容")
     return parser.parse_args()
+
+
+def parse_csv_list(value: Optional[str]) -> List[str]:
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
 
 
 class DatasetWriter:
@@ -111,6 +119,9 @@ class DatasetWriter:
 
     def added_samples(self) -> int:
         return len(self.annotations) - self.initial_count
+
+    def current_count(self) -> int:
+        return len(self.annotations)
 
     def _load_existing_annotations(self):
         if not self.annotations_path.exists():
@@ -239,6 +250,19 @@ class CarlaDataCollector:
         self.traffic_manager.set_synchronous_mode(True)
         self.traffic_manager.set_global_distance_to_leading_vehicle(1.0)
         print("✓ 世界已切换为同步模式")
+        if getattr(self.args, "weather", None):
+            self._set_weather(self.args.weather)
+
+    def _set_weather(self, weather_name: str):
+        if not hasattr(carla, "WeatherParameters"):
+            return
+        preset = getattr(carla.WeatherParameters, weather_name, None)
+        if preset is None:
+            print(f"⚠️ 未知天气预设: {weather_name}")
+            return
+        assert self.world is not None
+        self.world.set_weather(preset)
+        print(f"✓ 天气设置: {weather_name}")
 
     def _spawn_vehicle(self):
         assert self.world is not None
@@ -369,34 +393,55 @@ def main():
 
     online_mode = not args.offline and carla is not None
 
-    if online_mode:
-        collector = CarlaDataCollector(args, writer, commands)
-        with collector:
-            collector.collect()
-    else:
-        offline = OfflineDataCollector(
-            writer=writer,
-            frames_per_episode=args.frames_per_episode,
-            episodes=args.episodes,
-            future_steps=args.future_steps,
-            seed=args.seed,
-            commands=commands,
-        )
-        offline.run()
+    towns = parse_csv_list(args.towns) or [args.town]
+    weather_presets = parse_csv_list(args.weather_presets)
+    if not weather_presets:
+        weather_presets = [None]
+    weather_presets = [
+        None if w is None or w.lower() in ("default", "none") else w for w in weather_presets
+    ]
 
-    record = {
-        "run_id": run_id,
-        "created_at": datetime.utcnow().isoformat() + "Z",
-        "split": args.split,
-        "dataset_version": args.dataset_version,
-        "online_mode": online_mode,
-        "num_samples": len(writer.annotations),
-        "added_samples": writer.added_samples(),
-        "image_dir": str(Path(args.split) / "images"),
-        "annotation_file": str(Path(args.split) / "annotations.json"),
-        "args": vars(args),
-    }
-    manifest.append(record)
+    run_plan = [(town, weather) for town in towns for weather in weather_presets]
+    for idx, (town, weather) in enumerate(run_plan):
+        run_args = argparse.Namespace(**vars(args))
+        run_args.town = town
+        run_args.weather = weather
+        start_count = writer.current_count()
+
+        if online_mode:
+            collector = CarlaDataCollector(run_args, writer, commands)
+            with collector:
+                collector.collect()
+        else:
+            offline = OfflineDataCollector(
+                writer=writer,
+                frames_per_episode=args.frames_per_episode,
+                episodes=args.episodes,
+                future_steps=args.future_steps,
+                seed=args.seed + idx,
+                commands=commands,
+            )
+            offline.run()
+
+        added_samples = writer.current_count() - start_count
+        suffix = f"{town}_{weather or 'default'}"
+        run_key = run_id if len(run_plan) == 1 else f"{run_id}_{suffix}"
+
+        record = {
+            "run_id": run_key,
+            "created_at": datetime.utcnow().isoformat() + "Z",
+            "split": args.split,
+            "dataset_version": args.dataset_version,
+            "online_mode": online_mode,
+            "town": town,
+            "weather": weather or "default",
+            "num_samples": writer.current_count(),
+            "added_samples": added_samples,
+            "image_dir": str(Path(args.split) / "images"),
+            "annotation_file": str(Path(args.split) / "annotations.json"),
+            "args": vars(run_args),
+        }
+        manifest.append(record)
 
 
 if __name__ == "__main__":

@@ -280,6 +280,15 @@ python scripts/collect_carla_data.py \
   --overwrite
 ```
 
+支持多场景/多天气批量采集：
+
+```bash
+python scripts/collect_carla_data.py \
+  --towns Town01,Town03 \
+  --weather-presets ClearNoon,CloudyNoon \
+  --episodes 2
+```
+
 ### 模型训练
 
 #### 使用 PyTorch Lightning 训练
