@@ -98,7 +98,7 @@ Data Collection from CARLA
    cd $CARLA_ROOT
    ./CarlaUE4.sh
 
-2. Run data collection script (to be implemented):
+2. Run data collection script:
    python scripts/collect_carla_data.py --output-dir ./datasets/carla --episodes 100
 
 3. The script should record:

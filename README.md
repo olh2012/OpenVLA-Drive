@@ -494,16 +494,14 @@ python check_setup.py
   - ✅ Custom collate function
 - ✅ PyTorch Lightning 训练模块
 - ✅ 评估指标和闭环仿真框架
+- ✅ 闭环评估脚本（日志/固定起终点）
 - ✅ 配置文件系统
 - ✅ 示例和测试脚本
+- ✅ CARLA 数据收集脚本（多场景/版本清单）
 
 ### 进行中 🚧
-- ⏳ CARLA 数据收集脚本实现
-  - `scripts/collect_carla_data.py` 已支持同步采集 + 离线伪数据 fallback
 - ⏳ 在 CARLA 上收集驾驶数据
 - ⏳ 模仿学习训练
-- ⏳ 完整的闭环评估
-  - `evaluation/closed_loop_sim.py` 接入 VLADrivingPolicy 并输出指标
 
 ### 计划中 📋
 - 📌 多任务学习（导航、避障、车道保持）
